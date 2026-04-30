@@ -59,6 +59,7 @@ import Pipeline from './pages/Pipeline';
 import Plantillas from './pages/Plantillas';
 import Reportes from './pages/Reportes';
 import Variables from './pages/Variables';
+import ScraperDashboard from './pages/ScraperDashboard';
 import __Layout from './Layout.jsx';
 
 
@@ -76,10 +77,11 @@ export const PAGES = {
     "Plantillas": Plantillas,
     "Reportes": Reportes,
     "Variables": Variables,
+    "ScraperDashboard": ScraperDashboard,
 }
 
 export const pagesConfig = {
-    mainPage: "Home",
+    mainPage: "ScraperDashboard",
     Pages: PAGES,
     Layout: __Layout,
 };
