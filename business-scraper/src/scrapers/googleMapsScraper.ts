@@ -115,15 +115,21 @@ export class GoogleMapsScraper {
         .getAttribute('href').catch(() => null);
       const telefono = telHref ? DataCleaner.cleanPhone(telHref.replace('tel:', '')) : null;
 
-      // Website — first external link that's not google.com
+      // Scan all external links — separate Instagram from website
       const allLinks = await page.locator('a[href^="http"]').all();
       let sitioWeb: string | null = null;
+      let instagram: string | null = null;
       for (const link of allLinks) {
         const href = await link.getAttribute('href').catch(() => null) ?? '';
-        if (href && !href.includes('google.') && !href.includes('goo.gl')) {
+        if (!href || href.includes('google.') || href.includes('goo.gl')) continue;
+        if (!instagram && href.includes('instagram.com')) {
+          // Extract handle: instagram.com/handle or instagram.com/handle/
+          const match = href.match(/instagram\.com\/([^/?#]+)/);
+          if (match?.[1] && match[1] !== 'p') instagram = match[1].replace(/\/$/, '');
+        } else if (!sitioWeb && !href.includes('instagram.com') && !href.includes('facebook.com')) {
           sitioWeb = DataCleaner.cleanUrl(href);
-          break;
         }
+        if (instagram && sitioWeb) break;
       }
 
       // Address — button with copy-address data attribute
@@ -137,6 +143,7 @@ export class GoogleMapsScraper {
       if (telefono)  found.push(`📞 ${telefono}`);
       if (direccion) found.push(`📍 ${direccion.slice(0, 40)}`);
       if (sitioWeb)  found.push(`🌐 ${sitioWeb.slice(0, 40)}`);
+      if (instagram) found.push(`📸 @${instagram}`);
       Logger.debug(`[Google Maps]      ${found.length ? found.join('  |  ') : '(sin datos adicionales)'}`);
 
       const lead: Lead = {
@@ -146,6 +153,7 @@ export class GoogleMapsScraper {
         ciudad,
         direccion:   direccion   ?? undefined,
         telefono:    telefono    ?? undefined,
+        instagram:   instagram   ?? undefined,
         fuente:      'google_maps',
         urlFuente:   page.url(),
         fechaExtraccion: new Date(),
