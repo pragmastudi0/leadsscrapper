@@ -1,8 +1,8 @@
 /**
- * Solo para el deploy en Vercel: el scraper (Playwright + monorepo) corre en local (server.cjs).
- * Handler mínimo — sin require, sin async — para evitar 500 por bundler / env / runtime.
+ * Solo para el deploy en Vercel: el scraper corre en local (server.cjs).
+ * ESM default export — package.json tiene "type": "module"; CommonJS (module.exports) rompe el deploy.
  */
-module.exports = (req, res) => {
+export default function scrape(req, res) {
   res.setHeader("Content-Type", "application/json");
 
   if (req.method === "OPTIONS") {
@@ -24,4 +24,4 @@ module.exports = (req, res) => {
       "El scraper no puede ejecutarse en Vercel (Playwright, tiempo de ejecución y carpeta business-scraper no están en el servidor).",
     hint: "En tu PC: cd dashboard && npm run dev. En esta web usá Importar JSON, Exportar Excel y los enlaces de WhatsApp.",
   });
-};
+}
