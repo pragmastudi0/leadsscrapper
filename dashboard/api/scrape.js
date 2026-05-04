@@ -1,10 +1,8 @@
 /**
  * Vercel Serverless Function — POST /api/scrape
- * En preview/producción de Vercel no hay Playwright ni el monorepo completo; respondemos 503 con instrucciones.
- * El SPA rewrite ya no debe capturar /api/* (ver vercel.json).
+ * En Vercel respondemos 503 sin cargar scrape-runner (evita 500 si el bundler no incluye .cjs / paths).
+ * El require del runner solo corre fuera de Vercel (p. ej. self-hosted con Node).
  */
-const { runScrapeJob } = require("../scrape-runner.cjs");
-
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let raw = "";
@@ -23,6 +21,7 @@ function readJsonBody(req) {
 }
 
 module.exports = async (req, res) => {
+  try {
   res.setHeader("Content-Type", "application/json");
 
   if (req.method === "OPTIONS") {
@@ -37,13 +36,20 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
-  if (process.env.VERCEL) {
+  const onVercel =
+    process.env.VERCEL === "1" ||
+    process.env.VERCEL === "true" ||
+    Boolean(process.env.VERCEL_URL);
+
+  if (onVercel) {
     return res.status(503).json({
       error:
         "El scraper no puede ejecutarse en Vercel (Playwright, tiempo de ejecución y archivos del monorepo no están disponibles en el servidor).",
       hint: "En tu PC: cd dashboard && npm run dev (levanta API + Vite). En esta web podés Importar JSON y exportar Excel, o usar los botones de WhatsApp.",
     });
   }
+
+  const { runScrapeJob } = require("../scrape-runner.cjs");
 
   let body = req.body;
   if (body == null || typeof body !== "object") {
@@ -56,4 +62,12 @@ module.exports = async (req, res) => {
 
   const result = await runScrapeJob(body);
   return res.status(result.status).json(result.body);
+  } catch (err) {
+    console.error("[api/scrape]", err);
+    res.setHeader("Content-Type", "application/json");
+    return res.status(500).json({
+      error: "Error interno en /api/scrape",
+      hint: String(err?.message || err),
+    });
+  }
 };
