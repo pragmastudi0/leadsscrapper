@@ -4,6 +4,7 @@ import { Deduplicator } from './services/deduplicator';
 import { Filter } from './services/filter';
 import { GoogleSheetsOutput } from './outputs/googleSheets';
 import { JSONOutput } from './outputs/jsonOutput';
+import { ExcelOutput } from './outputs/excelOutput';
 import { config } from './config/config';
 import { Logger } from './utils/logger';
 import { Helpers } from './utils/helpers';
@@ -88,6 +89,10 @@ class BusinessScraper {
 
       if (config.output.csv.enabled) {
         JSONOutput.writeLeadsCSV(filteredLeads, config.output.csv.filename);
+      }
+
+      if (config.output.excel.enabled) {
+        ExcelOutput.writeLeads(filteredLeads, config.output.excel.filename);
       }
 
       if (config.output.googleSheets.enabled && config.output.googleSheets.spreadsheetId) {

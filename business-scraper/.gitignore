@@ -4,3 +4,4 @@ output/
 .env
 credentials.json
 *.log
+scraper-user-config.json

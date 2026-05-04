@@ -1,13 +1,60 @@
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import { FiltroLead, DeduplicationConfig } from '../types/lead';
 
 dotenv.config();
 
+type UserFileConfig = {
+  search?: {
+    keywords?: string[];
+    cities?: string[];
+    limit?: number;
+  };
+};
+
+function loadUserSearchOverrides(): UserFileConfig['search'] | null {
+  const configPath = path.join(process.cwd(), 'scraper-user-config.json');
+  if (!fs.existsSync(configPath)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as UserFileConfig;
+    return parsed.search ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const userSearch = loadUserSearchOverrides();
+
+const envKeywords = (process.env.SEARCH_KEYWORDS ?? 'restaurante,cafetería')
+  .split(',')
+  .map(k => k.trim())
+  .filter(Boolean);
+const envCities = (process.env.SEARCH_CITIES ?? 'Córdoba,Buenos Aires')
+  .split(',')
+  .map(c => c.trim())
+  .filter(Boolean);
+const envLimit = parseInt(process.env.SEARCH_LIMIT ?? '50', 10);
+
+function resolveSearchLimit(): number {
+  const fromUser = userSearch?.limit;
+  if (typeof fromUser === 'number' && Number.isFinite(fromUser) && fromUser > 0) {
+    return Math.max(1, Math.floor(fromUser));
+  }
+  if (Number.isFinite(envLimit) && envLimit > 0) return envLimit;
+  return 50;
+}
+
 export const config = {
   search: {
-    keywords: (process.env.SEARCH_KEYWORDS ?? 'restaurante,cafetería').split(',').map(k => k.trim()),
-    cities: (process.env.SEARCH_CITIES ?? 'Córdoba,Buenos Aires').split(',').map(c => c.trim()),
-    limit: parseInt(process.env.SEARCH_LIMIT ?? '50'),
+    keywords: (userSearch?.keywords?.length
+      ? userSearch.keywords
+      : envKeywords
+    ).map(k => String(k).trim()).filter(Boolean),
+    cities: (userSearch?.cities?.length ? userSearch.cities : envCities)
+      .map(c => String(c).trim())
+      .filter(Boolean),
+    limit: resolveSearchLimit(),
   },
 
   scrapers: {
@@ -52,6 +99,10 @@ export const config = {
     csv: {
       enabled: true,
       filename: 'leads.csv',
+    },
+    excel: {
+      enabled: process.env.EXCEL_EXPORT !== 'false',
+      filename: process.env.EXCEL_FILENAME ?? 'leads.xlsx',
     },
   },
 
