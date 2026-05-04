@@ -12,8 +12,9 @@ export class GoogleMapsScraper {
     return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
   }
 
-  private getRandomDelay(): number {
-    return Math.floor(Math.random() * (DELAYS.MAX_MS - DELAYS.MIN_MS) + DELAYS.MIN_MS);
+  private randomDelay(min = DELAYS.MIN_MS, max = DELAYS.MAX_MS): Promise<void> {
+    const ms = Math.floor(Math.random() * (max - min) + min);
+    return new Promise(r => setTimeout(r, ms));
   }
 
   private async initBrowser(): Promise<void> {
@@ -33,108 +34,133 @@ export class GoogleMapsScraper {
     await this.initBrowser();
     const context = await this.browser!.newContext({
       userAgent: this.getRandomUserAgent(),
-      viewport: { width: 1920, height: 1080 },
+      viewport: { width: 1280, height: 800 },
       extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
-      // Disable images/fonts to speed up loading
-      serviceWorkers: 'block',
     });
     const page = await context.newPage();
-    await page.route('**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf}', r => r.abort());
+    // Block heavy assets — speeds up each page load significantly
+    await page.route('**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf,svg}', r => r.abort());
     return page;
   }
 
+  // ── Step 1: collect all place URLs from the search results list ─────────────
+  private async collectPlaceUrls(page: Page, limite: number): Promise<string[]> {
+    const seen = new Set<string>();
+    let scrollAttempts = 0;
+    const maxScrolls = Math.ceil(limite / 8) + 2;
+
+    while (seen.size < limite && scrollAttempts < maxScrolls) {
+      const links = await page.locator('a[href*="/maps/place/"]').all();
+
+      for (const link of links) {
+        const href = await link.getAttribute('href').catch(() => null);
+        if (!href) continue;
+        // Normalise: strip query params after the place path
+        const clean = href.split('?')[0].replace(/^.*\/maps\/place\//, '/maps/place/');
+        const full  = href.startsWith('http') ? href : `https://www.google.com${href}`;
+        if (!seen.has(clean)) seen.add(full);
+        if (seen.size >= limite) break;
+      }
+
+      if (seen.size >= limite) break;
+
+      // Scroll the feed down to load more results
+      const feed = page.locator('[role="feed"]').first();
+      const scrolled = await feed.evaluate(el => {
+        const h = el as HTMLElement;
+        if (h.scrollTop + h.clientHeight >= h.scrollHeight - 10) return false;
+        h.scrollTop += 600;
+        return true;
+      }).catch(() => false);
+
+      if (!scrolled) break;
+      await this.randomDelay(800, 1400);
+      scrollAttempts++;
+    }
+
+    return Array.from(seen);
+  }
+
+  // ── Step 2: visit each place URL directly and extract data ──────────────────
+  private async extractFromUrl(page: Page, url: string, ciudad: string): Promise<Lead | null> {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
+
+      const nombre = await page.locator('h1').first().textContent().catch(() => null);
+      if (!nombre?.trim()) return null;
+
+      // Phone — tel: link is the most reliable
+      const telHref = await page.locator('a[href^="tel:"]').first()
+        .getAttribute('href').catch(() => null);
+      const telefono = telHref ? DataCleaner.cleanPhone(telHref.replace('tel:', '')) : null;
+
+      // Website — first external link that's not google.com
+      const allLinks = await page.locator('a[href^="http"]').all();
+      let sitioWeb: string | null = null;
+      for (const link of allLinks) {
+        const href = await link.getAttribute('href').catch(() => null) ?? '';
+        if (href && !href.includes('google.') && !href.includes('goo.gl')) {
+          sitioWeb = DataCleaner.cleanUrl(href);
+          break;
+        }
+      }
+
+      // Address — button with copy-address data attribute
+      const addressText = await page
+        .locator('[data-item-id="address"], button[data-tooltip*="direcci"], button[aria-label*="irecci"]')
+        .first().textContent().catch(() => null) ?? '';
+      const direccion = addressText.trim() ? DataCleaner.cleanAddress(addressText) : null;
+
+      const lead: Lead = {
+        nombre:      DataCleaner.extractFirstName(nombre.trim()),
+        apellido:    DataCleaner.extractLastName(nombre.trim()),
+        nombreLocal: DataCleaner.cleanBusinessName(nombre.trim()),
+        ciudad,
+        direccion:   direccion   ?? undefined,
+        telefono:    telefono    ?? undefined,
+        fuente:      'google_maps',
+        urlFuente:   page.url(),
+        fechaExtraccion: new Date(),
+      };
+
+      return lead;
+    } catch (error) {
+      Logger.error(`[Google Maps] Error extrayendo ${url}: ${error}`);
+      return null;
+    }
+  }
+
+  // ── Main entry point ────────────────────────────────────────────────────────
   async searchBusinesses(options: GoogleMapsSearchOptions): Promise<Lead[]> {
     const leads: Lead[] = [];
+    const limite = options.limite ?? 10;
     let page: Page | null = null;
 
     try {
-      Logger.info(`[Google Maps] Buscando: "${options.keyword}" en ${options.ciudad}`);
+      Logger.info(`[Google Maps] Buscando: "${options.keyword}" en ${options.ciudad} (límite: ${limite})`);
 
       page = await this.createPage();
-      const searchQuery = `${options.keyword} ${options.ciudad}`;
-      const url = `https://www.google.com/maps/search/${encodeURIComponent(searchQuery)}`;
+      const url = `https://www.google.com/maps/search/${encodeURIComponent(`${options.keyword} ${options.ciudad}`)}`;
 
-      // 'networkidle' never fires on Maps — use 'domcontentloaded' + wait for results
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForSelector('[role="feed"], a[href*="/maps/place/"]', { timeout: 15000 })
+        .catch(() => Logger.warn('[Google Maps] Feed tardó en cargar'));
+      await this.randomDelay(1000, 1800);
 
-      // Wait for the results feed to appear (up to 15s)
-      await page.waitForSelector('[role="feed"]', { timeout: 15000 }).catch(() => {
-        Logger.warn('[Google Maps] Feed no encontrado, continuando igual...');
-      });
+      // Collect URLs first — no navigation yet
+      const placeUrls = await this.collectPlaceUrls(page, limite);
+      Logger.info(`[Google Maps] ${placeUrls.length} lugares encontrados — extrayendo datos...`);
 
-      await page.waitForTimeout(this.getRandomDelay());
-
-      // Debug: log candidate selectors so we can adapt if Google changes the HTML
-      const debugCounts = await page.evaluate(() => ({
-        dataItemId:    document.querySelectorAll('[data-item-id]').length,
-        feedChildren:  document.querySelectorAll('[role="feed"] > div').length,
-        placeLinks:    document.querySelectorAll('a[href*="/maps/place/"]').length,
-        hfpxzc:        document.querySelectorAll('.hfpxzc').length,
-        Nv2PK:         document.querySelectorAll('.Nv2PK').length,
-      }));
-      Logger.debug(`[Google Maps] Selectores encontrados: ${JSON.stringify(debugCounts)}`);
-
-      // Pick whichever selector has results — Maps changes classes frequently
-      const CARD_SELECTORS = [
-        'a[href*="/maps/place/"]',   // most stable — actual place links
-        '.Nv2PK',                    // result card wrapper (2024)
-        '.hfpxzc',                   // clickable place row
-        '[role="feed"] > div > div', // generic feed children
-        '[data-item-id]',            // old selector, kept as fallback
-      ];
-
-      let cardSelector = CARD_SELECTORS[0];
-      for (const sel of CARD_SELECTORS) {
-        const count = await page.locator(sel).count();
-        if (count > 0) { cardSelector = sel; break; }
-      }
-      Logger.debug(`[Google Maps] Usando selector: ${cardSelector}`);
-
-      // Scroll to load more results
-      let previousHeight = 0;
-      let scrollCount = 0;
-      const maxScrolls = options.limite ? Math.ceil(options.limite / 20) : 5;
-
-      while (scrollCount < maxScrolls) {
-        const feed = page.locator('[role="feed"]').first();
-        const currentHeight = await feed.evaluate(el => (el as HTMLElement).scrollHeight).catch(() => 0);
-        if (currentHeight === previousHeight) break;
-        await feed.evaluate(el => { (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight; }).catch(() => {});
-        previousHeight = currentHeight;
-        scrollCount++;
-        await page.waitForTimeout(this.getRandomDelay());
-      }
-
-      const businessCards = await page.locator(cardSelector).all();
-      Logger.info(`[Google Maps] Encontradas ${businessCards.length} tarjetas de negocio`);
-
-      // If cards are <a> links, navigate directly to their href (faster & more reliable)
-      const firstTag = await businessCards[0]?.evaluate(el => el.tagName.toLowerCase()).catch(() => 'div');
-      const useNavigation = firstTag === 'a';
-
-      for (let i = 0; i < businessCards.length; i++) {
-        if (options.limite && leads.length >= options.limite) break;
-        try {
-          if (useNavigation) {
-            const href = await businessCards[i].getAttribute('href').catch(() => null);
-            if (!href) continue;
-            const fullUrl = href.startsWith('http') ? href : `https://www.google.com${href}`;
-            await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          } else {
-            await businessCards[i].click();
-          }
-          await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
-          await page.waitForTimeout(800);
-          const lead = await this.extractBusinessInfo(page, options.ciudad);
-          if (lead && Validator.isLeadComplete(lead)) {
-            leads.push(lead);
-            Logger.success(`[Google Maps] Extraído: ${lead.nombreLocal}`);
-          }
-          // Go back to results if we navigated away
-          if (useNavigation) await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});
-        } catch (error) {
-          Logger.error(`[Google Maps] Error extrayendo tarjeta ${i}: ${error}`);
+      // Visit each place directly (no goBack — navigate straight to next URL)
+      for (const placeUrl of placeUrls) {
+        if (leads.length >= limite) break;
+        const lead = await this.extractFromUrl(page, placeUrl, options.ciudad);
+        if (lead && Validator.isLeadComplete(lead)) {
+          leads.push(lead);
+          Logger.success(`[Google Maps] Extraído: ${lead.nombreLocal}`);
         }
+        await this.randomDelay(400, 800); // short delay between places
       }
 
       Logger.info(`[Google Maps] Completado: ${leads.length} leads extraídos`);
@@ -145,53 +171,5 @@ export class GoogleMapsScraper {
     }
 
     return leads;
-  }
-
-  private async extractBusinessInfo(page: Page, ciudad: string): Promise<Lead | null> {
-    try {
-      const nombre = await page.locator('h1').first().textContent().catch(() => null);
-      if (!nombre?.trim()) return null;
-
-      // Phone: href="tel:..." is the most reliable selector
-      const telHref = await page.locator('a[href^="tel:"]').first()
-        .getAttribute('href').catch(() => null);
-      const telefono = telHref
-        ? DataCleaner.cleanPhone(telHref.replace('tel:', ''))
-        : null;
-
-      // Website: any external link in the detail panel that isn't google
-      const allLinks = await page.locator('a[href^="http"]').all();
-      let sitioWeb: string | null = null;
-      for (const link of allLinks) {
-        const href = await link.getAttribute('href').catch(() => null) ?? '';
-        if (href && !href.includes('google.com') && !href.includes('goo.gl')) {
-          sitioWeb = DataCleaner.cleanUrl(href);
-          break;
-        }
-      }
-
-      // Address: button that contains the copy-address action
-      const addressText = await page
-        .locator('button[data-item-id="address"], [data-tooltip*="direcci"], button[aria-label*="irecci"]')
-        .first().textContent().catch(() => null) ?? '';
-      const direccion = addressText ? DataCleaner.cleanAddress(addressText) : null;
-
-      const lead: Lead = {
-        nombre: DataCleaner.extractFirstName(nombre.trim()),
-        apellido: DataCleaner.extractLastName(nombre.trim()),
-        nombreLocal: DataCleaner.cleanBusinessName(nombre.trim()),
-        ciudad,
-        direccion: direccion ?? undefined,
-        telefono: telefono ?? undefined,
-        fuente: 'google_maps',
-        urlFuente: page.url(),
-        fechaExtraccion: new Date(),
-      };
-
-      return lead;
-    } catch (error) {
-      Logger.error(`[Google Maps] Error extrayendo info: ${error}`);
-      return null;
-    }
   }
 }
