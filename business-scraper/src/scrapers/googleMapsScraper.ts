@@ -46,8 +46,11 @@ export class GoogleMapsScraper {
   // ── Step 1: collect all place URLs from the search results list ─────────────
   private async collectPlaceUrls(page: Page, limite: number): Promise<string[]> {
     const seen = new Set<string>();
+    const seenClean = new Set<string>();
     let scrollAttempts = 0;
     const maxScrolls = Math.ceil(limite / 8) + 2;
+
+    Logger.info(`[Google Maps] 🔍 Recolectando URLs del feed (máx ${limite})...`);
 
     while (seen.size < limite && scrollAttempts < maxScrolls) {
       const links = await page.locator('a[href*="/maps/place/"]').all();
@@ -55,14 +58,21 @@ export class GoogleMapsScraper {
       for (const link of links) {
         const href = await link.getAttribute('href').catch(() => null);
         if (!href) continue;
-        // Normalise: strip query params after the place path
         const clean = href.split('?')[0].replace(/^.*\/maps\/place\//, '/maps/place/');
         const full  = href.startsWith('http') ? href : `https://www.google.com${href}`;
-        if (!seen.has(clean)) seen.add(full);
+        if (!seenClean.has(clean)) {
+          seenClean.add(clean);
+          seen.add(full);
+          // Extract a readable name from the URL path
+          const namePart = decodeURIComponent(clean.split('/maps/place/')[1] ?? '').replace(/\+/g, ' ');
+          Logger.debug(`[Google Maps]   + URL #${seen.size}: ${namePart.slice(0, 60)}`);
+        }
         if (seen.size >= limite) break;
       }
 
       if (seen.size >= limite) break;
+
+      Logger.info(`[Google Maps] 📜 Scroll #${scrollAttempts + 1} — ${seen.size}/${limite} URLs encontradas`);
 
       // Scroll the feed down to load more results
       const feed = page.locator('[role="feed"]').first();
@@ -73,22 +83,32 @@ export class GoogleMapsScraper {
         return true;
       }).catch(() => false);
 
-      if (!scrolled) break;
+      if (!scrolled) {
+        Logger.warn('[Google Maps] Feed llegó al final, no hay más resultados');
+        break;
+      }
       await this.randomDelay(800, 1400);
       scrollAttempts++;
     }
 
+    Logger.info(`[Google Maps] ✅ Recolección terminada: ${seen.size} URLs únicas`);
     return Array.from(seen);
   }
 
   // ── Step 2: visit each place URL directly and extract data ──────────────────
-  private async extractFromUrl(page: Page, url: string, ciudad: string): Promise<Lead | null> {
+  private async extractFromUrl(page: Page, url: string, ciudad: string, index: number, total: number): Promise<Lead | null> {
     try {
+      Logger.info(`[Google Maps] [${index}/${total}] Abriendo lugar...`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
 
       const nombre = await page.locator('h1').first().textContent().catch(() => null);
-      if (!nombre?.trim()) return null;
+      if (!nombre?.trim()) {
+        Logger.warn(`[Google Maps] [${index}/${total}] Sin nombre — saltando`);
+        return null;
+      }
+
+      Logger.info(`[Google Maps] [${index}/${total}] 🏪 ${nombre.trim()}`);
 
       // Phone — tel: link is the most reliable
       const telHref = await page.locator('a[href^="tel:"]').first()
@@ -112,6 +132,13 @@ export class GoogleMapsScraper {
         .first().textContent().catch(() => null) ?? '';
       const direccion = addressText.trim() ? DataCleaner.cleanAddress(addressText) : null;
 
+      // Log what was found
+      const found: string[] = [];
+      if (telefono)  found.push(`📞 ${telefono}`);
+      if (direccion) found.push(`📍 ${direccion.slice(0, 40)}`);
+      if (sitioWeb)  found.push(`🌐 ${sitioWeb.slice(0, 40)}`);
+      Logger.debug(`[Google Maps]      ${found.length ? found.join('  |  ') : '(sin datos adicionales)'}`);
+
       const lead: Lead = {
         nombre:      DataCleaner.extractFirstName(nombre.trim()),
         apellido:    DataCleaner.extractLastName(nombre.trim()),
@@ -126,7 +153,7 @@ export class GoogleMapsScraper {
 
       return lead;
     } catch (error) {
-      Logger.error(`[Google Maps] Error extrayendo ${url}: ${error}`);
+      Logger.error(`[Google Maps] [${index}/${total}] Error: ${error}`);
       return null;
     }
   }
@@ -153,14 +180,16 @@ export class GoogleMapsScraper {
       Logger.info(`[Google Maps] ${placeUrls.length} lugares encontrados — extrayendo datos...`);
 
       // Visit each place directly (no goBack — navigate straight to next URL)
-      for (const placeUrl of placeUrls) {
+      for (let i = 0; i < placeUrls.length; i++) {
         if (leads.length >= limite) break;
-        const lead = await this.extractFromUrl(page, placeUrl, options.ciudad);
+        const lead = await this.extractFromUrl(page, placeUrls[i], options.ciudad, i + 1, placeUrls.length);
         if (lead && Validator.isLeadComplete(lead)) {
           leads.push(lead);
-          Logger.success(`[Google Maps] Extraído: ${lead.nombreLocal}`);
+          Logger.success(`[Google Maps] ✅ Lead guardado: ${lead.nombreLocal} (${leads.length}/${limite})`);
+        } else if (lead) {
+          Logger.warn(`[Google Maps]    Incompleto, descartado: ${lead.nombreLocal}`);
         }
-        await this.randomDelay(400, 800); // short delay between places
+        await this.randomDelay(400, 800);
       }
 
       Logger.info(`[Google Maps] Completado: ${leads.length} leads extraídos`);
