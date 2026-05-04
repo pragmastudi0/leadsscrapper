@@ -1,8 +1,11 @@
 import { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 import {
-  Zap, Loader2, Download, Save, Upload, MessageCircle, Play,
+  Zap, Loader2, Download, Save, Upload, MessageCircle, Play, Info,
 } from "lucide-react";
+
+/** Build de producción (p. ej. Vercel): el scraper solo corre en local. */
+const isHostedBuild = import.meta.env.PROD;
 
 const STORAGE_KEY = "leadsscraper-search-config-v1";
 
@@ -197,8 +200,16 @@ export default function ScraperDashboard() {
         const arr = Array.isArray(parsed) ? parsed : parsed.leads;
         if (!Array.isArray(arr)) return;
         const next = arr.map(normalizeImportedLead).filter(Boolean);
-        setLeads(next);
-        setPreviewMeta({ totalBeforeCap: next.length, capped: false, fromFile: true });
+        const maxRaw = maxTotalLeads.trim();
+        const cap = maxRaw !== "" ? Math.max(0, parseInt(maxRaw, 10) || 0) : 0;
+        const totalBefore = next.length;
+        const sliced = cap > 0 ? next.slice(0, cap) : next;
+        setLeads(sliced);
+        setPreviewMeta({
+          totalBeforeCap: totalBefore,
+          capped: cap > 0 && totalBefore > sliced.length,
+          fromFile: true,
+        });
         setLastError("");
         setLastDetail("");
         setScrapeStatus("idle");
@@ -209,6 +220,7 @@ export default function ScraperDashboard() {
   };
 
   const runScrape = async () => {
+    if (isHostedBuild) return;
     persistSearchConfig();
     const keywords = parseListInput(searchKeywordsText);
     const cities = parseListInput(searchCitiesText);
@@ -279,6 +291,7 @@ export default function ScraperDashboard() {
   };
 
   const running = scrapeStatus === "running";
+  const runDisabled = running || isHostedBuild;
 
   return (
     <>
@@ -336,14 +349,48 @@ export default function ScraperDashboard() {
             <div>
               <div style={{ fontSize: 14, fontWeight: 600 }}>Lead Scraper</div>
               <div style={{ fontSize: 11, color: C.dimText }}>
-                Configuración → ejecutar → previsualizar → Excel / WhatsApp
+                {isHostedBuild
+                  ? "Importar JSON → previsualizar → Excel / WhatsApp (RUN solo en tu PC)"
+                  : "Configuración → ejecutar → previsualizar → Excel / WhatsApp"}
               </div>
             </div>
           </div>
           <div style={{ fontSize: 11, color: C.dimText, fontFamily: "monospace" }}>
-            {running ? "Scraping…" : scrapeStatus === "done" ? "Listo" : scrapeStatus === "error" ? "Error" : "Listo para ejecutar"}
+            {isHostedBuild
+              ? "Solo lectura / import"
+              : running
+                ? "Scraping…"
+                : scrapeStatus === "done"
+                  ? "Listo"
+                  : scrapeStatus === "error"
+                    ? "Error"
+                    : "Listo para ejecutar"}
           </div>
         </header>
+
+        {isHostedBuild && (
+          <div
+            style={{
+              flexShrink: 0,
+              padding: "12px 20px",
+              background: "rgba(200, 240, 74, 0.07)",
+              borderBottom: `1px solid ${C.border}`,
+              display: "flex",
+              gap: 12,
+              alignItems: "flex-start",
+            }}
+          >
+            <Info size={18} color={C.lime} style={{ flexShrink: 0, marginTop: 2 }} aria-hidden />
+            <div style={{ fontSize: 13, color: C.midText, lineHeight: 1.55 }}>
+              <span style={{ color: C.white, fontWeight: 600 }}>Estás en la versión publicada (Vercel).</span>{" "}
+              Aquí no corre Playwright ni la carpeta <code style={{ color: C.lime }}>business-scraper</code>.
+              Usá <strong style={{ color: C.lime }}>Importar JSON</strong> (el <code style={{ color: C.lime }}>leads.json</code> que generes en tu PC),
+              luego <strong style={{ color: C.lime }}>Exportar Excel</strong> y los enlaces de <strong style={{ color: C.wa }}>WhatsApp</strong>.
+              Para scrapear desde la app: en tu máquina ejecutá{" "}
+              <code style={{ color: C.lime }}>cd dashboard && npm run dev</code>.
+            </div>
+          </div>
+        )}
 
         <div
           style={{
@@ -419,14 +466,17 @@ export default function ScraperDashboard() {
               </div>
             </div>
             <p style={{ margin: 0, fontSize: 11, color: C.dimText }}>
-              Si ponés un tope, el scraper sigue completo pero la app muestra y exporta solo esos leads.
+              {isHostedBuild
+                ? "Importá leads.json desde tu PC; podés limitar cuántas filas ves con «Tope en vista» antes de exportar."
+                : "Si ponés un tope, el scraper sigue completo pero la app muestra y exporta solo esos leads."}
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <button
                 type="button"
-                disabled={running}
+                disabled={runDisabled}
                 onClick={runScrape}
+                title={isHostedBuild ? "Ejecutá npm run dev en tu PC para usar RUN" : undefined}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -435,17 +485,22 @@ export default function ScraperDashboard() {
                   padding: "12px 16px",
                   borderRadius: 10,
                   border: "none",
-                  background: running ? "#333" : C.lime,
-                  color: running ? C.dimText : "#000",
+                  background: runDisabled ? "#333" : C.lime,
+                  color: runDisabled ? C.dimText : "#000",
                   fontSize: 13,
                   fontWeight: 700,
-                  cursor: running ? "not-allowed" : "pointer",
+                  cursor: runDisabled ? "not-allowed" : "pointer",
                 }}
               >
                 {running ? (
                   <>
                     <Loader2 size={18} style={{ animation: "spin 0.9s linear infinite" }} />
                     Ejecutando scraper…
+                  </>
+                ) : isHostedBuild ? (
+                  <>
+                    <Play size={18} />
+                    RUN — solo en local (npm run dev)
                   </>
                 ) : (
                   <>
