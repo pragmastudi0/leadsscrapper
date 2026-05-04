@@ -245,7 +245,11 @@ export default function ScraperDashboard() {
       if (!res.ok) {
         setScrapeStatus("error");
         setLastError(data.error || `Error ${res.status}`);
-        const detail = [data.stderr, data.stdout].filter(Boolean).join("\n---\n");
+        const detail = [
+          data.hint,
+          data.stderr,
+          data.stdout,
+        ].filter(Boolean).join("\n\n---\n\n");
         setLastDetail(detail);
         return;
       }
