@@ -64,6 +64,32 @@ export class GoogleMapsScraper {
 
       await page.waitForTimeout(this.getRandomDelay());
 
+      // Debug: log candidate selectors so we can adapt if Google changes the HTML
+      const debugCounts = await page.evaluate(() => ({
+        dataItemId:    document.querySelectorAll('[data-item-id]').length,
+        feedChildren:  document.querySelectorAll('[role="feed"] > div').length,
+        placeLinks:    document.querySelectorAll('a[href*="/maps/place/"]').length,
+        hfpxzc:        document.querySelectorAll('.hfpxzc').length,
+        Nv2PK:         document.querySelectorAll('.Nv2PK').length,
+      }));
+      Logger.debug(`[Google Maps] Selectores encontrados: ${JSON.stringify(debugCounts)}`);
+
+      // Pick whichever selector has results — Maps changes classes frequently
+      const CARD_SELECTORS = [
+        'a[href*="/maps/place/"]',   // most stable — actual place links
+        '.Nv2PK',                    // result card wrapper (2024)
+        '.hfpxzc',                   // clickable place row
+        '[role="feed"] > div > div', // generic feed children
+        '[data-item-id]',            // old selector, kept as fallback
+      ];
+
+      let cardSelector = CARD_SELECTORS[0];
+      for (const sel of CARD_SELECTORS) {
+        const count = await page.locator(sel).count();
+        if (count > 0) { cardSelector = sel; break; }
+      }
+      Logger.debug(`[Google Maps] Usando selector: ${cardSelector}`);
+
       // Scroll to load more results
       let previousHeight = 0;
       let scrollCount = 0;
@@ -79,15 +105,24 @@ export class GoogleMapsScraper {
         await page.waitForTimeout(this.getRandomDelay());
       }
 
-      // Extract business cards
-      const businessCards = await page.locator('[data-item-id]').all();
+      const businessCards = await page.locator(cardSelector).all();
       Logger.info(`[Google Maps] Encontradas ${businessCards.length} tarjetas de negocio`);
+
+      // If cards are <a> links, navigate directly to their href (faster & more reliable)
+      const firstTag = await businessCards[0]?.evaluate(el => el.tagName.toLowerCase()).catch(() => 'div');
+      const useNavigation = firstTag === 'a';
 
       for (let i = 0; i < businessCards.length; i++) {
         if (options.limite && leads.length >= options.limite) break;
         try {
-          await businessCards[i].click();
-          // Wait for the detail panel h1 to load
+          if (useNavigation) {
+            const href = await businessCards[i].getAttribute('href').catch(() => null);
+            if (!href) continue;
+            const fullUrl = href.startsWith('http') ? href : `https://www.google.com${href}`;
+            await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          } else {
+            await businessCards[i].click();
+          }
           await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
           await page.waitForTimeout(800);
           const lead = await this.extractBusinessInfo(page, options.ciudad);
@@ -95,6 +130,8 @@ export class GoogleMapsScraper {
             leads.push(lead);
             Logger.success(`[Google Maps] Extraído: ${lead.nombreLocal}`);
           }
+          // Go back to results if we navigated away
+          if (useNavigation) await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});
         } catch (error) {
           Logger.error(`[Google Maps] Error extrayendo tarjeta ${i}: ${error}`);
         }
