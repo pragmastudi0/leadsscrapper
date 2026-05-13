@@ -70,4 +70,5 @@ export interface FiltroLead {
   soloConTelefono?: boolean;
   tiposNegocioIncluidos?: string[];
   ciudadesIncluidas?: string[];
+  maxReviews?: number;   // discard leads with more reviews than this (large chains)
 }

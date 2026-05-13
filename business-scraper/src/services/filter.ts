@@ -8,6 +8,10 @@ export class Filter {
     if (filtro.soloConInstagram && !lead.instagram) return false;
     if (filtro.soloConEmail && !lead.email) return false;
     if (filtro.soloConTelefono && !lead.telefono) return false;
+    if (filtro.maxReviews != null && lead.reviews) {
+      const count = parseInt(lead.reviews.replace(/\D/g, ''), 10);
+      if (!isNaN(count) && count > filtro.maxReviews) return false;
+    }
     if (
       filtro.tiposNegocioIncluidos &&
       filtro.tiposNegocioIncluidos.length > 0 &&
