@@ -34,6 +34,9 @@ export interface Lead {
   facebookUrl?: string;
   tiktokUrl?: string;
 
+  // Opportunity tag
+  oportunidad?: string;  // e.g. "BEBE" for low-review businesses
+
   // Meta
   tipoNegocio?: string;
   productos?: string[];
@@ -70,5 +73,6 @@ export interface FiltroLead {
   soloConTelefono?: boolean;
   tiposNegocioIncluidos?: string[];
   ciudadesIncluidas?: string[];
-  maxReviews?: number;   // discard leads with more reviews than this (large chains)
+  maxReviews?: number;        // discard leads with more reviews than this (large chains)
+  minReviewsAlerta?: number;  // tag leads with fewer reviews than this as BEBE
 }

@@ -33,6 +33,7 @@ export const config = {
     soloConEmail: false,
     soloConTelefono: false,
     maxReviews: parseInt(process.env.MAX_REVIEWS ?? '1000'),
+    minReviewsAlerta: parseInt(process.env.MIN_REVIEWS_ALERTA ?? '30'),
   } as FiltroLead,
 
   deduplication: {

@@ -37,6 +37,23 @@ export class Filter {
   }
 
   static filterLeads(leads: Lead[], filtro: FiltroLead): Lead[] {
-    return leads.filter(lead => this.applyFilters(lead, filtro));
+    const filtered = leads.filter(lead => this.applyFilters(lead, filtro));
+    this.tagOpportunities(filtered, filtro);
+    return filtered;
+  }
+
+  private static tagOpportunities(leads: Lead[], filtro: FiltroLead): void {
+    const threshold = filtro.minReviewsAlerta ?? 30;
+    for (const lead of leads) {
+      if (!lead.reviews) {
+        // No reviews at all — even rawer opportunity
+        lead.oportunidad = 'BEBE';
+        continue;
+      }
+      const count = parseInt(lead.reviews.replace(/\D/g, ''), 10);
+      if (!isNaN(count) && count < threshold) {
+        lead.oportunidad = 'BEBE';
+      }
+    }
   }
 }
