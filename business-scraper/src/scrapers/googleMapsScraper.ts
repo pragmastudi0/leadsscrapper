@@ -115,118 +115,133 @@ export class GoogleMapsScraper {
     try {
       Logger.info(`[Google Maps] [${index}/${total}] Abriendo lugar...`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+      // Wait for the h1 (name) — the panel renders in two phases, name comes first
       await page.waitForSelector('h1', { timeout: 8000 }).catch(() => {});
 
-      const nombre = await page.locator('h1').first().textContent().catch(() => null);
-      if (!nombre?.trim()) {
+      // Give the JS panel a moment to inject phone, links and category.
+      // Sequential locator.getAttribute() calls take ~90s; a single evaluate() is ~2s.
+      await page.waitForTimeout(1500);
+
+      // ── Extract everything in one JS round-trip ────────────────────────────
+      // Single evaluate() instead of N sequential Playwright calls — huge speedup.
+      const raw = await page.evaluate(() => {
+        // Helpers
+        const text  = (sel: string) => (document.querySelector(sel) as HTMLElement | null)?.textContent?.trim() ?? null;
+        const attr  = (sel: string, a: string) => (document.querySelector(sel) as HTMLElement | null)?.getAttribute(a) ?? null;
+
+        // Name
+        const nombre = text('h1');
+
+        // Phone — tel: link is the most reliable signal
+        const telLink = document.querySelector('a[href^="tel:"]') as HTMLAnchorElement | null;
+        const telefono = telLink?.href?.replace('tel:', '') ?? null;
+
+        // Rating — aria-label "X estrellas" / "X stars"
+        const ratingEl = document.querySelector(
+          '[aria-label*="stars"],[aria-label*="estrellas"],[aria-label*="Estrellas"],[aria-label*="Stars"]'
+        );
+        const ratingLabel = ratingEl?.getAttribute('aria-label') ?? null;
+
+        // Reviews count — aria-label "X reseñas" / "X reviews"
+        const reviewsEl = document.querySelector(
+          '[aria-label*="reseñas"],[aria-label*="Reseñas"],[aria-label*="reviews"],[aria-label*="Reviews"],[aria-label*="opiniones"]'
+        );
+        const reviewsLabel = reviewsEl?.getAttribute('aria-label') ?? null;
+
+        // Category — button right below h1, not a rating/action button
+        // Strategy: find buttons via jsaction that look like category labels
+        const SKIP = new Set(['Compartir','Guardar','Cómo llegar','Cerrar','Llamar','Sitio web','Ver fotos']);
+        let categoria: string | null = null;
+        for (const btn of Array.from(document.querySelectorAll('button[jsaction]'))) {
+          const t = (btn as HTMLElement).textContent?.trim() ?? '';
+          if (t.length > 3 && t.length < 60 && !/^\d/.test(t) && !/estrell/i.test(t) && !SKIP.has(t)) {
+            categoria = t;
+            break;
+          }
+        }
+
+        // Address — data-item-id="address" is the canonical selector
+        const addressEl = document.querySelector('[data-item-id="address"]') as HTMLElement | null;
+        const direccion = addressEl?.textContent?.trim() ?? null;
+
+        // All external links in one pass
+        const links: string[] = Array.from(document.querySelectorAll('a[href^="http"]'))
+          .map(el => (el as HTMLAnchorElement).href)
+          .filter(h => h && !h.includes('google.') && !h.includes('goo.gl'));
+
+        return { nombre, telefono, ratingLabel, reviewsLabel, categoria, direccion, links };
+      });
+
+      if (!raw.nombre?.trim()) {
         Logger.warn(`[Google Maps] [${index}/${total}] Sin nombre — saltando`);
         return null;
       }
 
-      Logger.info(`[Google Maps] [${index}/${total}] 🏪 ${nombre.trim()}`);
+      Logger.info(`[Google Maps] [${index}/${total}] 🏪 ${raw.nombre.trim()}`);
 
-      // ── Phone ──────────────────────────────────────────────────────────────
-      const telHref = await page.locator('a[href^="tel:"]').first()
-        .getAttribute('href').catch(() => null);
-      const telefono = telHref ? DataCleaner.cleanPhone(telHref.replace('tel:', '')) : null;
+      // ── Parse extracted values ─────────────────────────────────────────────
+      const telefono = raw.telefono ? DataCleaner.cleanPhone(raw.telefono) : null;
 
-      // ── Rating & Reviews ───────────────────────────────────────────────────
-      // aria-label contains the rating info in multiple locales
-      const ratingAriaLabel = await page
-        .locator('[aria-label*="stars"], [aria-label*="estrellas"], [aria-label*="Estrellas"]')
-        .first().getAttribute('aria-label').catch(() => null);
-      const rating = ratingAriaLabel ? (ratingAriaLabel.match(/(\d+[.,]\d+|\d+)/)?.[1] ?? null) : null;
+      const rating  = raw.ratingLabel  ? (raw.ratingLabel.match(/(\d+[.,]\d+|\d+)/)?.[1]  ?? null) : null;
+      const reviews = raw.reviewsLabel ? (raw.reviewsLabel.match(/(\d[\d.,]*)/)?.[1]?.replace(/\./g, '').replace(',', '') ?? null) : null;
 
-      // Reviews count — button that shows the number of reviews
-      const reviewsAriaLabel = await page
-        .locator('[aria-label*="reviews"], [aria-label*="reseñas"], [aria-label*="Reseñas"], [aria-label*="opiniones"]')
-        .first().getAttribute('aria-label').catch(() => null);
-      const reviews = reviewsAriaLabel ? (reviewsAriaLabel.match(/([\d,\.]+)/)?.[1]?.replace(/\D/g, '') ?? null) : null;
+      const categoria = raw.categoria ?? null;
+      const direccion = raw.direccion ? DataCleaner.cleanAddress(raw.direccion) : null;
 
-      // ── Category ───────────────────────────────────────────────────────────
-      // Category appears as a button/link right below the business name
-      // Try multiple selectors — Google Maps HTML changes frequently
-      const categoryText =
-        await page.locator('button[jsaction*="pane.category"]').first().textContent().catch(() => null) ??
-        await page.locator('[aria-label*="Category"], [aria-label*="Categoría"]').first().textContent().catch(() => null) ??
-        // Fallback: second line of the header area (name is first, category is second)
-        await page.locator('div[role="main"] span.fontBodyMedium').first().textContent().catch(() => null);
-      const categoria = categoryText?.trim() || null;
-
-      // ── External links (website + Instagram) ───────────────────────────────
-      const allLinks = await page.locator('a[href^="http"]').all();
-      let sitioWeb: string | null = null;
-      let instagram: string | null = null;
+      // ── Classify external links ────────────────────────────────────────────
+      let sitioWeb:    string | null = null;
+      let instagram:   string | null = null;
       let facebookUrl: string | null = null;
 
-      for (const link of allLinks) {
-        const href = (await link.getAttribute('href').catch(() => null)) ?? '';
-        if (!href || href.includes('google.') || href.includes('goo.gl')) continue;
-
+      for (const href of raw.links) {
         if (!instagram && href.includes('instagram.com')) {
-          const handle = this.extractInstagramHandle(href);
-          if (handle) instagram = handle;
+          instagram = this.extractInstagramHandle(href);
           continue;
         }
-
         if (!facebookUrl && (href.includes('facebook.com') || href.includes('fb.com'))) {
-          facebookUrl = href.split('?')[0]; // strip tracking params
+          facebookUrl = href.split('?')[0];
           continue;
         }
-
-        // First non-Google/non-social link is the website
         if (!sitioWeb &&
-            !href.includes('instagram.com') &&
-            !href.includes('facebook.com') &&
-            !href.includes('twitter.com') &&
-            !href.includes('tiktok.com') &&
-            !href.includes('youtube.com') &&
-            !href.includes('yelp.com')) {
+            !href.includes('instagram.com') && !href.includes('facebook.com') &&
+            !href.includes('twitter.com')   && !href.includes('tiktok.com') &&
+            !href.includes('youtube.com')   && !href.includes('yelp.com') &&
+            !href.includes('whatsapp.com')  && !href.includes('wa.me')) {
           sitioWeb = DataCleaner.cleanUrl(href);
         }
-
         if (instagram && sitioWeb) break;
       }
 
-      // ── Address ────────────────────────────────────────────────────────────
-      // Try data-item-id first, then aria-label patterns
-      const addressText =
-        await page.locator('[data-item-id="address"]').first().textContent().catch(() => null) ??
-        await page.locator('button[aria-label*="recc"], button[aria-label*="direc"], button[data-tooltip*="direc"]')
-          .first().textContent().catch(() => null) ??
-        await page.locator('button[data-item-id]').filter({ hasText: /\d/ })
-          .first().textContent().catch(() => null);
-      const direccion = addressText?.trim() ? DataCleaner.cleanAddress(addressText) : null;
-
       // ── Log what was found ─────────────────────────────────────────────────
       const found: string[] = [];
-      if (telefono)  found.push(`📞 ${telefono}`);
-      if (rating)    found.push(`⭐ ${rating}`);
-      if (reviews)   found.push(`💬 ${reviews} reseñas`);
-      if (categoria) found.push(`🏷 ${categoria.slice(0, 30)}`);
-      if (sitioWeb)  found.push(`🌐 ${sitioWeb.slice(0, 40)}`);
-      if (instagram) found.push(`📸 @${instagram}`);
+      if (telefono)    found.push(`📞 ${telefono}`);
+      if (rating)      found.push(`⭐ ${rating}`);
+      if (reviews)     found.push(`💬 ${reviews} reseñas`);
+      if (categoria)   found.push(`🏷 ${categoria.slice(0, 30)}`);
+      if (sitioWeb)    found.push(`🌐 ${sitioWeb.slice(0, 40)}`);
+      if (instagram)   found.push(`📸 @${instagram}`);
       if (facebookUrl) found.push(`👤 FB`);
       Logger.debug(`[Google Maps]      ${found.length ? found.join('  |  ') : '(sin datos adicionales)'}`);
 
       const lead: Lead = {
-        nombre:      DataCleaner.extractFirstName(nombre.trim()),
-        apellido:    DataCleaner.extractLastName(nombre.trim()),
-        nombreLocal: DataCleaner.cleanBusinessName(nombre.trim()),
+        nombre:       DataCleaner.extractFirstName(raw.nombre.trim()),
+        apellido:     DataCleaner.extractLastName(raw.nombre.trim()),
+        nombreLocal:  DataCleaner.cleanBusinessName(raw.nombre.trim()),
         keyword,
-        categoria:   categoria ?? undefined,
+        categoria:    categoria    ?? undefined,
         ciudad,
-        direccion:   direccion  ?? undefined,
-        telefono:    telefono   ?? undefined,
-        sitioWeb:    sitioWeb   ?? undefined,
+        direccion:    direccion    ?? undefined,
+        telefono:     telefono     ?? undefined,
+        sitioWeb:     sitioWeb     ?? undefined,
         googleMapsUrl: page.url(),
-        rating:      rating     ?? undefined,
-        reviews:     reviews    ?? undefined,
-        instagram:   instagram  ?? undefined,
+        rating:       rating       ?? undefined,
+        reviews:      reviews      ?? undefined,
+        instagram:    instagram    ?? undefined,
         instagramUrl: instagram ? `https://www.instagram.com/${instagram}/` : undefined,
-        facebookUrl: facebookUrl ?? undefined,
-        fuente:      'google_maps',
-        urlFuente:   page.url(),
+        facebookUrl:  facebookUrl  ?? undefined,
+        fuente:       'google_maps',
+        urlFuente:    page.url(),
         fechaExtraccion: new Date(),
       };
 
@@ -263,11 +278,14 @@ export class GoogleMapsScraper {
         const lead = await this.extractFromUrl(
           page, placeUrls[i], options.ciudad, options.keyword, i + 1, placeUrls.length,
         );
-        if (lead && Validator.isLeadComplete(lead)) {
-          leads.push(lead);
-          Logger.success(`[Google Maps] ✅ Lead guardado: ${lead.nombreLocal} (${leads.length}/${limite})`);
+        // Accept any lead that has at minimum a website OR already has a contact.
+        // Leads with only sitioWeb will gain contacts in the enrichment phase.
+        const hasMinData = !!lead && (!!lead.sitioWeb || Validator.isLeadComplete(lead));
+        if (hasMinData) {
+          leads.push(lead!);
+          Logger.success(`[Google Maps] ✅ Lead guardado: ${lead!.nombreLocal} (${leads.length}/${limite})`);
         } else if (lead) {
-          Logger.warn(`[Google Maps]    Incompleto, descartado: ${lead.nombreLocal}`);
+          Logger.warn(`[Google Maps]    Sin sitio web ni contacto, descartado: ${lead.nombreLocal}`);
         }
         await this.randomDelay(400, 800);
       }
