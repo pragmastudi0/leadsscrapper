@@ -2,7 +2,7 @@ import { chromium, Browser, Page } from 'playwright';
 import { Lead, GoogleMapsSearchOptions } from '../types/lead';
 import { DataCleaner } from '../services/dataCleaner';
 import { Validator } from '../services/validator';
-import { USER_AGENTS, DELAYS } from '../config/constants';
+import { USER_AGENTS, DELAYS, INSTAGRAM_EXCLUDED_HANDLES } from '../config/constants';
 import { Logger } from '../utils/logger';
 
 export class GoogleMapsScraper {
@@ -35,20 +35,19 @@ export class GoogleMapsScraper {
     const context = await this.browser!.newContext({
       userAgent: this.getRandomUserAgent(),
       viewport: { width: 1280, height: 800 },
-      extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
+      extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8' },
     });
     const page = await context.newPage();
-    // Block heavy assets — speeds up each page load significantly
     await page.route('**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf,svg}', r => r.abort());
     return page;
   }
 
-  // ── Step 1: collect all place URLs from the search results list ─────────────
+  // ── Step 1: collect all place URLs from the search results feed ──────────────
   private async collectPlaceUrls(page: Page, limite: number): Promise<string[]> {
     const seen = new Set<string>();
     const seenClean = new Set<string>();
     let scrollAttempts = 0;
-    const maxScrolls = Math.ceil(limite / 8) + 2;
+    const maxScrolls = Math.ceil(limite / 8) + 5;
 
     Logger.info(`[Google Maps] 🔍 Recolectando URLs del feed (máx ${limite})...`);
 
@@ -63,7 +62,6 @@ export class GoogleMapsScraper {
         if (!seenClean.has(clean)) {
           seenClean.add(clean);
           seen.add(full);
-          // Extract a readable name from the URL path
           const namePart = decodeURIComponent(clean.split('/maps/place/')[1] ?? '').replace(/\+/g, ' ');
           Logger.debug(`[Google Maps]   + URL #${seen.size}: ${namePart.slice(0, 60)}`);
         }
@@ -74,7 +72,6 @@ export class GoogleMapsScraper {
 
       Logger.info(`[Google Maps] 📜 Scroll #${scrollAttempts + 1} — ${seen.size}/${limite} URLs encontradas`);
 
-      // Scroll the feed down to load more results
       const feed = page.locator('[role="feed"]').first();
       const scrolled = await feed.evaluate(el => {
         const h = el as HTMLElement;
@@ -84,7 +81,7 @@ export class GoogleMapsScraper {
       }).catch(() => false);
 
       if (!scrolled) {
-        Logger.warn('[Google Maps] Feed llegó al final, no hay más resultados');
+        Logger.warn('[Google Maps] Feed llegó al final');
         break;
       }
       await this.randomDelay(800, 1400);
@@ -95,8 +92,26 @@ export class GoogleMapsScraper {
     return Array.from(seen);
   }
 
-  // ── Step 2: visit each place URL directly and extract data ──────────────────
-  private async extractFromUrl(page: Page, url: string, ciudad: string, index: number, total: number): Promise<Lead | null> {
+  // Extract a clean Instagram handle from any instagram.com URL fragment
+  private extractInstagramHandle(href: string): string | null {
+    // Match handle after instagram.com/  — stop at /, ?, #
+    const match = href.match(/instagram\.com\/([a-zA-Z0-9._]{1,30})\/?(?:[?#].*)?$/);
+    if (!match) return null;
+    const handle = match[1].toLowerCase();
+    // Exclude system paths and single-char fragments
+    if (INSTAGRAM_EXCLUDED_HANDLES.has(handle) || handle.length < 3) return null;
+    return handle;
+  }
+
+  // ── Step 2: visit each place URL and extract all data ───────────────────────
+  private async extractFromUrl(
+    page: Page,
+    url: string,
+    ciudad: string,
+    keyword: string,
+    index: number,
+    total: number,
+  ): Promise<Lead | null> {
     try {
       Logger.info(`[Google Maps] [${index}/${total}] Abriendo lugar...`);
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -110,50 +125,106 @@ export class GoogleMapsScraper {
 
       Logger.info(`[Google Maps] [${index}/${total}] 🏪 ${nombre.trim()}`);
 
-      // Phone — tel: link is the most reliable
+      // ── Phone ──────────────────────────────────────────────────────────────
       const telHref = await page.locator('a[href^="tel:"]').first()
         .getAttribute('href').catch(() => null);
       const telefono = telHref ? DataCleaner.cleanPhone(telHref.replace('tel:', '')) : null;
 
-      // Scan all external links — separate Instagram from website
+      // ── Rating & Reviews ───────────────────────────────────────────────────
+      // aria-label contains the rating info in multiple locales
+      const ratingAriaLabel = await page
+        .locator('[aria-label*="stars"], [aria-label*="estrellas"], [aria-label*="Estrellas"]')
+        .first().getAttribute('aria-label').catch(() => null);
+      const rating = ratingAriaLabel ? (ratingAriaLabel.match(/(\d+[.,]\d+|\d+)/)?.[1] ?? null) : null;
+
+      // Reviews count — button that shows the number of reviews
+      const reviewsAriaLabel = await page
+        .locator('[aria-label*="reviews"], [aria-label*="reseñas"], [aria-label*="Reseñas"], [aria-label*="opiniones"]')
+        .first().getAttribute('aria-label').catch(() => null);
+      const reviews = reviewsAriaLabel ? (reviewsAriaLabel.match(/([\d,\.]+)/)?.[1]?.replace(/\D/g, '') ?? null) : null;
+
+      // ── Category ───────────────────────────────────────────────────────────
+      // Category appears as a button/link right below the business name
+      // Try multiple selectors — Google Maps HTML changes frequently
+      const categoryText =
+        await page.locator('button[jsaction*="pane.category"]').first().textContent().catch(() => null) ??
+        await page.locator('[aria-label*="Category"], [aria-label*="Categoría"]').first().textContent().catch(() => null) ??
+        // Fallback: second line of the header area (name is first, category is second)
+        await page.locator('div[role="main"] span.fontBodyMedium').first().textContent().catch(() => null);
+      const categoria = categoryText?.trim() || null;
+
+      // ── External links (website + Instagram) ───────────────────────────────
       const allLinks = await page.locator('a[href^="http"]').all();
       let sitioWeb: string | null = null;
       let instagram: string | null = null;
+      let facebookUrl: string | null = null;
+
       for (const link of allLinks) {
-        const href = await link.getAttribute('href').catch(() => null) ?? '';
+        const href = (await link.getAttribute('href').catch(() => null)) ?? '';
         if (!href || href.includes('google.') || href.includes('goo.gl')) continue;
+
         if (!instagram && href.includes('instagram.com')) {
-          // Extract handle: instagram.com/handle or instagram.com/handle/
-          const match = href.match(/instagram\.com\/([^/?#]+)/);
-          if (match?.[1] && match[1] !== 'p') instagram = match[1].replace(/\/$/, '');
-        } else if (!sitioWeb && !href.includes('instagram.com') && !href.includes('facebook.com')) {
+          const handle = this.extractInstagramHandle(href);
+          if (handle) instagram = handle;
+          continue;
+        }
+
+        if (!facebookUrl && (href.includes('facebook.com') || href.includes('fb.com'))) {
+          facebookUrl = href.split('?')[0]; // strip tracking params
+          continue;
+        }
+
+        // First non-Google/non-social link is the website
+        if (!sitioWeb &&
+            !href.includes('instagram.com') &&
+            !href.includes('facebook.com') &&
+            !href.includes('twitter.com') &&
+            !href.includes('tiktok.com') &&
+            !href.includes('youtube.com') &&
+            !href.includes('yelp.com')) {
           sitioWeb = DataCleaner.cleanUrl(href);
         }
+
         if (instagram && sitioWeb) break;
       }
 
-      // Address — button with copy-address data attribute
-      const addressText = await page
-        .locator('[data-item-id="address"], button[data-tooltip*="direcci"], button[aria-label*="irecci"]')
-        .first().textContent().catch(() => null) ?? '';
-      const direccion = addressText.trim() ? DataCleaner.cleanAddress(addressText) : null;
+      // ── Address ────────────────────────────────────────────────────────────
+      // Try data-item-id first, then aria-label patterns
+      const addressText =
+        await page.locator('[data-item-id="address"]').first().textContent().catch(() => null) ??
+        await page.locator('button[aria-label*="recc"], button[aria-label*="direc"], button[data-tooltip*="direc"]')
+          .first().textContent().catch(() => null) ??
+        await page.locator('button[data-item-id]').filter({ hasText: /\d/ })
+          .first().textContent().catch(() => null);
+      const direccion = addressText?.trim() ? DataCleaner.cleanAddress(addressText) : null;
 
-      // Log what was found
+      // ── Log what was found ─────────────────────────────────────────────────
       const found: string[] = [];
       if (telefono)  found.push(`📞 ${telefono}`);
-      if (direccion) found.push(`📍 ${direccion.slice(0, 40)}`);
+      if (rating)    found.push(`⭐ ${rating}`);
+      if (reviews)   found.push(`💬 ${reviews} reseñas`);
+      if (categoria) found.push(`🏷 ${categoria.slice(0, 30)}`);
       if (sitioWeb)  found.push(`🌐 ${sitioWeb.slice(0, 40)}`);
       if (instagram) found.push(`📸 @${instagram}`);
+      if (facebookUrl) found.push(`👤 FB`);
       Logger.debug(`[Google Maps]      ${found.length ? found.join('  |  ') : '(sin datos adicionales)'}`);
 
       const lead: Lead = {
         nombre:      DataCleaner.extractFirstName(nombre.trim()),
         apellido:    DataCleaner.extractLastName(nombre.trim()),
         nombreLocal: DataCleaner.cleanBusinessName(nombre.trim()),
+        keyword,
+        categoria:   categoria ?? undefined,
         ciudad,
-        direccion:   direccion   ?? undefined,
-        telefono:    telefono    ?? undefined,
-        instagram:   instagram   ?? undefined,
+        direccion:   direccion  ?? undefined,
+        telefono:    telefono   ?? undefined,
+        sitioWeb:    sitioWeb   ?? undefined,
+        googleMapsUrl: page.url(),
+        rating:      rating     ?? undefined,
+        reviews:     reviews    ?? undefined,
+        instagram:   instagram  ?? undefined,
+        instagramUrl: instagram ? `https://www.instagram.com/${instagram}/` : undefined,
+        facebookUrl: facebookUrl ?? undefined,
         fuente:      'google_maps',
         urlFuente:   page.url(),
         fechaExtraccion: new Date(),
@@ -176,21 +247,22 @@ export class GoogleMapsScraper {
       Logger.info(`[Google Maps] Buscando: "${options.keyword}" en ${options.ciudad} (límite: ${limite})`);
 
       page = await this.createPage();
-      const url = `https://www.google.com/maps/search/${encodeURIComponent(`${options.keyword} ${options.ciudad}`)}`;
+      const query = `${options.keyword} ${options.ciudad}`;
+      const url = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.waitForSelector('[role="feed"], a[href*="/maps/place/"]', { timeout: 15000 })
         .catch(() => Logger.warn('[Google Maps] Feed tardó en cargar'));
       await this.randomDelay(1000, 1800);
 
-      // Collect URLs first — no navigation yet
       const placeUrls = await this.collectPlaceUrls(page, limite);
       Logger.info(`[Google Maps] ${placeUrls.length} lugares encontrados — extrayendo datos...`);
 
-      // Visit each place directly (no goBack — navigate straight to next URL)
       for (let i = 0; i < placeUrls.length; i++) {
         if (leads.length >= limite) break;
-        const lead = await this.extractFromUrl(page, placeUrls[i], options.ciudad, i + 1, placeUrls.length);
+        const lead = await this.extractFromUrl(
+          page, placeUrls[i], options.ciudad, options.keyword, i + 1, placeUrls.length,
+        );
         if (lead && Validator.isLeadComplete(lead)) {
           leads.push(lead);
           Logger.success(`[Google Maps] ✅ Lead guardado: ${lead.nombreLocal} (${leads.length}/${limite})`);
