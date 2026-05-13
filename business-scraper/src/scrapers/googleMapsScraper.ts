@@ -278,14 +278,16 @@ export class GoogleMapsScraper {
         const lead = await this.extractFromUrl(
           page, placeUrls[i], options.ciudad, options.keyword, i + 1, placeUrls.length,
         );
-        // Accept any lead that has at minimum a website OR already has a contact.
-        // Leads with only sitioWeb will gain contacts in the enrichment phase.
-        const hasMinData = !!lead && (!!lead.sitioWeb || Validator.isLeadComplete(lead));
-        if (hasMinData) {
-          leads.push(lead!);
-          Logger.success(`[Google Maps] ✅ Lead guardado: ${lead!.nombreLocal} (${leads.length}/${limite})`);
-        } else if (lead) {
-          Logger.warn(`[Google Maps]    Sin sitio web ni contacto, descartado: ${lead.nombreLocal}`);
+        // Keep every lead that has a valid name — no web/phone/email is itself
+        // a sales signal (opportunity to offer those services).
+        if (lead) {
+          leads.push(lead);
+          const tags = [
+            lead.sitioWeb    ? '🌐' : '🚫web',
+            lead.telefono    ? '📞' : '',
+            lead.instagram   ? '📸' : '',
+          ].filter(Boolean).join(' ');
+          Logger.success(`[Google Maps] ✅ ${lead.nombreLocal} ${tags} (${leads.length}/${limite})`);
         }
         await this.randomDelay(400, 800);
       }
