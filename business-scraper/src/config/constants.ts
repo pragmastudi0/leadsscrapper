@@ -1,9 +1,11 @@
+// Chrome 122 (Jan 2024) — current enough to not stand out, stable enough to match real traffic
 export const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
 ];
 
 export const DELAYS = {
@@ -19,6 +21,42 @@ export const REGEX = {
   INSTAGRAM: /@([a-zA-Z0-9_.-]+)/g,
   URL: /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)/g,
 };
+
+// Instagram system paths — never valid business handles
+export const INSTAGRAM_EXCLUDED_HANDLES = new Set([
+  'p', 'reel', 'reels', 'stories', 'explore', 'tv', 'accounts',
+  'about', 'legal', 'privacy', 'help', 'press', 'api', 'oauth',
+  'direct', 'login', 'shoppingapi', 'locations', 'directory',
+  'hashtag', 'challenge', 'developer', 'blog', 'business', 'ads',
+  'jobs', 'creators', 'safety', 'data-policy', 'terms', 'lite',
+  'ar', 'en', 'es', 'pt', 'fr', 'de', 'it', 'ja', 'ko', 'zh',
+  'share', 'web', 'null', 'undefined', 'instagram',
+]);
+
+// Link aggregators / bio pages — require Playwright to render
+export const LINK_AGGREGATORS = [
+  'linktr.ee',
+  'linktree.com',
+  'beacons.ai',
+  'bio.site',
+  'campsite.bio',
+  'lnk.bio',
+  'taplink.cc',
+  'snipfeed.co',
+  'solo.to',
+  'ffm.to',
+  'bento.me',
+  'msha.ke',
+  'allmylinks.com',
+  'withkoji.com',
+  'milkshake.app',
+  'shorby.com',
+  'contactinbio.com',
+  'link.bio',
+  'magic.ly',
+  'shor.by',
+  'haystack.me',
+];
 
 export const GOOGLE_MAPS_SELECTORS = {
   BUSINESS_CARDS: '[data-item-id]',

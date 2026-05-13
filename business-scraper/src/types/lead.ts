@@ -1,12 +1,40 @@
 export interface Lead {
+  // Identity
   nombre: string;
   apellido?: string;
   nombreLocal: string;
+  keyword?: string;
+  categoria?: string;
+
+  // Location
   ciudad: string;
   direccion?: string;
+
+  // Contact
   email?: string;
   telefono?: string;
-  instagram?: string;
+
+  // Web presence
+  sitioWeb?: string;
+
+  // Google Maps
+  googleMapsUrl?: string;
+  rating?: string;
+  reviews?: string;
+
+  // Instagram (handle + enriched data)
+  instagram?: string;          // username only
+  instagramUrl?: string;       // full https://instagram.com/handle
+  instagramBio?: string;
+  instagramSitioWeb?: string;  // link-in-bio
+  instagramTelefono?: string;
+  instagramEmail?: string;
+
+  // Other socials
+  facebookUrl?: string;
+  tiktokUrl?: string;
+
+  // Meta
   tipoNegocio?: string;
   productos?: string[];
   fuente: string;
