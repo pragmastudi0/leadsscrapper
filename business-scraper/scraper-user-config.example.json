@@ -1,0 +1,7 @@
+{
+  "search": {
+    "keywords": ["restaurante", "cafetería", "bar"],
+    "cities": ["Córdoba", "Buenos Aires"],
+    "limit": 50
+  }
+}
