@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { chromium } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 import { Logger } from '../utils/logger';
 
 export interface InstagramProfileData {
@@ -14,6 +14,31 @@ export interface InstagramProfileData {
 }
 
 export class InstagramEnricher {
+  // Shared browser instance — launched once, reused across all Playwright calls.
+  // Eliminates the ~30s cold-start penalty per profile.
+  private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
+
+  private async getContext(): Promise<BrowserContext> {
+    if (!this.browser) {
+      this.browser = await chromium.launch({ headless: true });
+    }
+    if (!this.context) {
+      this.context = await this.browser.newContext({
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
+        viewport: { width: 390, height: 844 },
+        extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
+      });
+    }
+    return this.context;
+  }
+
+  async close(): Promise<void> {
+    await this.context?.close().catch(() => {});
+    await this.browser?.close().catch(() => {});
+    this.context = null;
+    this.browser = null;
+  }
   // ── Strategy 1: Instagram internal JSON API ────────────────────────────────
   // Works for public profiles without authentication.
   // Uses the same endpoint the web app calls.
@@ -57,13 +82,8 @@ export class InstagramEnricher {
   //   a) window.__additionalDataLoaded / script[type="application/json"] (JSON embed)
   //   b) DOM elements as fallback
   private async tryPlaywright(username: string): Promise<InstagramProfileData | null> {
-    const browser = await chromium.launch({ headless: true });
+    const context = await this.getContext();
     try {
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Mobile/15E148 Safari/604.1',
-        viewport: { width: 390, height: 844 },
-        extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
-      });
       const page = await context.newPage();
       // Block media — we only need HTML + scripts
       await page.route('**/*.{png,jpg,jpeg,gif,webp,woff,woff2,ttf,svg,mp4,m4v}', r => r.abort());
@@ -142,8 +162,6 @@ export class InstagramEnricher {
     } catch (error) {
       Logger.error(`[IG Enricher] Playwright falló para @${username}: ${error}`);
       return null;
-    } finally {
-      await browser.close().catch(() => {});
     }
   }
 

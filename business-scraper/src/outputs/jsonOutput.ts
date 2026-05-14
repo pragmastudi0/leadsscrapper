@@ -29,6 +29,7 @@ export class JSONOutput {
       fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
       const headers = [
+        'OPORTUNIDAD',
         'Nombre Local',
         'Keyword',
         'Categoría',
@@ -56,6 +57,7 @@ export class JSONOutput {
         headers.join(','),
         ...leads.map(lead =>
           [
+            this.escapeCsv(lead.oportunidad ?? ''),
             this.escapeCsv(lead.nombreLocal ?? ''),
             this.escapeCsv(lead.keyword ?? ''),
             this.escapeCsv(lead.categoria ?? ''),
