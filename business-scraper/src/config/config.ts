@@ -7,7 +7,7 @@ export const config = {
   search: {
     keywords: (process.env.SEARCH_KEYWORDS ?? 'restaurante,cafetería').split(',').map(k => k.trim()),
     cities: (process.env.SEARCH_CITIES ?? 'Córdoba,Buenos Aires').split(',').map(c => c.trim()),
-    limit: parseInt(process.env.SEARCH_LIMIT ?? '50'),
+    limit: parseInt(process.env.SEARCH_LIMIT ?? '100'),
   },
 
   scrapers: {

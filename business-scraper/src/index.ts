@@ -29,7 +29,7 @@ async function promptSearchParams(): Promise<{ keywords: string[]; cities: strin
 
   const kwRaw  = await ask(rl, `\x1b[33m🔑 Keywords\x1b[0m (separadas por coma) [${defaultKeywords}]: `);
   const ctRaw  = await ask(rl, `\x1b[33m📍 Ciudades\x1b[0m (separadas por coma) [${defaultCities}]: `);
-  const limRaw = await ask(rl, `\x1b[33m🔢 Cantidad de resultados por búsqueda\x1b[0m [${defaultLimit}]: `);
+  const limRaw = await ask(rl, `\x1b[33m🔢 Leads por búsqueda\x1b[0m (máx ~120 en Google Maps) [${defaultLimit}]: `);
 
   rl.close();
 

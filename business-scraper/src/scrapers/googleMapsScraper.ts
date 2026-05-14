@@ -44,19 +44,26 @@ export class GoogleMapsScraper {
 
   // ── Step 1: collect all place URLs from the search results feed ──────────────
   private async collectPlaceUrls(page: Page, limite: number): Promise<string[]> {
-    const seen = new Set<string>();
+    const seen     = new Set<string>();
     const seenClean = new Set<string>();
     let scrollAttempts = 0;
-    const maxScrolls = Math.ceil(limite / 8) + 5;
+    let staleScrolls   = 0;   // consecutive scrolls that added 0 new URLs
+    const MAX_SCROLLS  = 40;  // absolute safety cap (~120 places max on Maps)
+    const MAX_STALE    = 3;   // stop after 3 fruitless scrolls = feed exhausted
 
     Logger.info(`[Google Maps] 🔍 Recolectando URLs del feed (máx ${limite})...`);
 
-    while (seen.size < limite && scrollAttempts < maxScrolls) {
-      const links = await page.locator('a[href*="/maps/place/"]').all();
+    while (seen.size < limite && scrollAttempts < MAX_SCROLLS && staleScrolls < MAX_STALE) {
+      const prevSize = seen.size;
 
-      for (const link of links) {
-        const href = await link.getAttribute('href').catch(() => null);
-        if (!href) continue;
+      // Collect all place hrefs in one JS round-trip (much faster than sequential getAttribute)
+      const hrefs: string[] = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('a[href*="/maps/place/"]'))
+          .map(el => (el as HTMLAnchorElement).href)
+          .filter(Boolean)
+      );
+
+      for (const href of hrefs) {
         const clean = href.split('?')[0].replace(/^.*\/maps\/place\//, '/maps/place/');
         const full  = href.startsWith('http') ? href : `https://www.google.com${href}`;
         if (!seenClean.has(clean)) {
@@ -70,13 +77,21 @@ export class GoogleMapsScraper {
 
       if (seen.size >= limite) break;
 
-      Logger.info(`[Google Maps] 📜 Scroll #${scrollAttempts + 1} — ${seen.size}/${limite} URLs encontradas`);
+      const added = seen.size - prevSize;
+      staleScrolls = added === 0 ? staleScrolls + 1 : 0;
 
-      const feed = page.locator('[role="feed"]').first();
-      const scrolled = await feed.evaluate(el => {
+      Logger.info(`[Google Maps] 📜 Scroll #${scrollAttempts + 1} — ${seen.size} URLs (+${added} nuevas)`);
+
+      if (staleScrolls >= MAX_STALE) {
+        Logger.warn('[Google Maps] Feed agotado (sin nuevas URLs en 3 scrolls)');
+        break;
+      }
+
+      // Scroll the feed panel — increase step for faster collection
+      const scrolled = await page.locator('[role="feed"]').first().evaluate(el => {
         const h = el as HTMLElement;
-        if (h.scrollTop + h.clientHeight >= h.scrollHeight - 10) return false;
-        h.scrollTop += 600;
+        if (h.scrollTop + h.clientHeight >= h.scrollHeight - 50) return false;
+        h.scrollTop += 900;
         return true;
       }).catch(() => false);
 
@@ -84,7 +99,7 @@ export class GoogleMapsScraper {
         Logger.warn('[Google Maps] Feed llegó al final');
         break;
       }
-      await this.randomDelay(800, 1400);
+      await this.randomDelay(700, 1200);
       scrollAttempts++;
     }
 
