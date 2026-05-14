@@ -60,7 +60,7 @@ async function promptSearchParams(): Promise<{ keywords: string[]; cities: strin
 
 async function enrichLeads(leads: Lead[]): Promise<Lead[]> {
   const websiteScraper = new WebsiteScraper();
-  const igEnricher = new InstagramEnricher();
+  const igEnricher     = new InstagramEnricher();
 
   // ── Phase 1: website → social links ───────────────────────────────────────
   const leadsWithSite = leads.filter(l => l.sitioWeb);
@@ -123,6 +123,7 @@ async function enrichLeads(leads: Lead[]): Promise<Lead[]> {
     }
   }
 
+  await igEnricher.close();
   return leads;
 }
 
@@ -156,12 +157,17 @@ class BusinessScraper {
         await gmScraper.close();
       }
 
+      // ── Deduplicate BEFORE enrichment — avoid enriching the same business twice
+      Logger.info('Deduplicando leads antes de enrichment...');
+      const preEnrichDeduped = Deduplicator.deduplicateLeads(allLeads, config.deduplication);
+      Logger.success(`Leads únicos para enrichment: ${preEnrichDeduped.length} (${allLeads.length - preEnrichDeduped.length} duplicados salteados)`);
+
       // ── Website + Instagram enrichment ───────────────────────────────────
-      if (allLeads.length > 0) {
-        Logger.info(`[Enrichment] Iniciando enriquecimiento de ${allLeads.length} leads...`);
-        await enrichLeads(allLeads);
-        const withIG = allLeads.filter(l => l.instagram).length;
-        Logger.success(`[Enrichment] Completado. Leads con Instagram: ${withIG}/${allLeads.length}`);
+      if (preEnrichDeduped.length > 0) {
+        Logger.info(`[Enrichment] Iniciando enriquecimiento de ${preEnrichDeduped.length} leads...`);
+        await enrichLeads(preEnrichDeduped);
+        const withIG = preEnrichDeduped.filter(l => l.instagram).length;
+        Logger.success(`[Enrichment] Completado. Leads con Instagram: ${withIG}/${preEnrichDeduped.length}`);
       }
 
       // ── Instagram direct scraper (from INSTAGRAM_ACCOUNTS env) ───────────
@@ -174,7 +180,7 @@ class BusinessScraper {
           const igScraper = new InstagramScraper();
           try {
             const leads = await igScraper.scrapeProfiles(accounts);
-            allLeads.push(...leads);
+            preEnrichDeduped.push(...leads);
           } catch (error) {
             Logger.error(`Error en Instagram scraper: ${error}`);
           }
@@ -184,12 +190,12 @@ class BusinessScraper {
         }
       }
 
-      Logger.success(`Total leads antes de deduplicación: ${allLeads.length}`);
+      Logger.success(`Total leads: ${preEnrichDeduped.length}`);
 
-      // ── Deduplicate ──────────────────────────────────────────────────────
-      Logger.info('Deduplicando leads...');
-      const dedupedLeads = Deduplicator.deduplicateLeads(allLeads, config.deduplication);
-      const dedupStats = Helpers.getDeduplicationStats(allLeads.length, dedupedLeads.length);
+      // ── Final dedup (catches any new dupes from Instagram direct scraper) ─
+      Logger.info('Deduplicación final...');
+      const dedupedLeads = Deduplicator.deduplicateLeads(preEnrichDeduped, config.deduplication);
+      const dedupStats = Helpers.getDeduplicationStats(preEnrichDeduped.length, dedupedLeads.length);
       Logger.success(`Leads únicos: ${dedupedLeads.length} (${dedupStats.removed} removidos, ${dedupStats.percentage}%)`);
 
       // ── Filter ───────────────────────────────────────────────────────────

@@ -149,17 +149,10 @@ export class GoogleMapsScraper {
         );
         const reviewsLabel = reviewsEl?.getAttribute('aria-label') ?? null;
 
-        // Category — button right below h1, not a rating/action button
-        // Strategy: find buttons via jsaction that look like category labels
-        const SKIP = new Set(['Compartir','Guardar','Cómo llegar','Cerrar','Llamar','Sitio web','Ver fotos']);
-        let categoria: string | null = null;
-        for (const btn of Array.from(document.querySelectorAll('button[jsaction]'))) {
-          const t = (btn as HTMLElement).textContent?.trim() ?? '';
-          if (t.length > 3 && t.length < 60 && !/^\d/.test(t) && !/estrell/i.test(t) && !SKIP.has(t)) {
-            categoria = t;
-            break;
-          }
-        }
+        // Category — page title format is always "Name · Category · Google Maps"
+        // Much more reliable than hunting for buttons whose text/position changes
+        const titleParts = document.title.split('·').map(s => s.trim());
+        const categoria = titleParts.length >= 2 ? titleParts[1] ?? null : null;
 
         // Address — data-item-id="address" is the canonical selector
         const addressEl = document.querySelector('[data-item-id="address"]') as HTMLElement | null;
